@@ -22,6 +22,7 @@ import io.bisq.network.p2p.peers.keepalive.messages.Pong;
 import io.bisq.network.p2p.storage.messages.AddDataMessage;
 import io.bisq.network.p2p.storage.messages.AddPersistableNetworkPayloadMessage;
 import io.bisq.network.p2p.storage.messages.RefreshOfferMessage;
+import io.bisq.network.p2p.storage.messages.RemoveDataMessage;
 import io.bisq.network.p2p.storage.payload.CapabilityRequiringPayload;
 import io.bisq.network.p2p.storage.payload.PersistableNetworkPayload;
 import io.bisq.network.p2p.storage.payload.ProtectedStoragePayload;
@@ -37,10 +38,7 @@ import java.io.*;
 import java.net.Socket;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Optional;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
@@ -113,7 +111,8 @@ public class Connection implements MessageListener {
     private final List<Tuple2<Long, NetworkEnvelope>> messageTimeStamps = new ArrayList<>();
     private final CopyOnWriteArraySet<MessageListener> messageListeners = new CopyOnWriteArraySet<>();
     private volatile long lastSendTimeStamp = 0;
-
+    private static Map<String, Integer> messagesSent = new HashMap<>();
+    private static Map<String, Integer> messagesReceived = new HashMap<>();
 
     ///////////////////////////////////////////////////////////////////////////////////////////
     // Constructor
@@ -190,10 +189,11 @@ public class Connection implements MessageListener {
                     long now = System.currentTimeMillis();
                     long elapsed = now - lastSendTimeStamp;
                     if (elapsed < 20) {
-                        log.debug("We got 2 sendMessage requests in less than 20 ms. We set the thread to sleep " +
+                        //TODO just temp for testing
+                        log.warn("We got 2 sendMessage requests in less than 20 ms. We set the thread to sleep " +
                                         "for 50 ms to avoid flooding our peer. lastSendTimeStamp={}, now={}, elapsed={}",
                                 lastSendTimeStamp, now, elapsed);
-                        Thread.sleep(50);
+                        //Thread.sleep(50);
                     }
 
                     lastSendTimeStamp = now;
@@ -227,6 +227,21 @@ public class Connection implements MessageListener {
                     }
 
                     if (!stopped) {
+                        int msgCount = 0;
+                        String key = networkEnvelope.getClass().getSimpleName();
+                        if (networkEnvelope instanceof AddPersistableNetworkPayloadMessage)
+                            key = ((AddPersistableNetworkPayloadMessage) networkEnvelope).getPersistableNetworkPayload().getClass().getSimpleName();
+                        else if (networkEnvelope instanceof AddDataMessage)
+                            key = ((AddDataMessage) networkEnvelope).getProtectedStorageEntry().getProtectedStoragePayload().getClass().getSimpleName();
+                        else if (networkEnvelope instanceof RemoveDataMessage)
+                            key = ((RemoveDataMessage) networkEnvelope).getProtectedStorageEntry().getProtectedStoragePayload().getClass().getSimpleName();
+
+                        if (messagesSent.containsKey(key))
+                            msgCount = messagesSent.get(key);
+
+                        messagesSent.put(key, ++msgCount);
+                        log.warn("messagesSent={}", messagesSent);
+
                         protoOutputStreamLock.lock();
                         proto.writeDelimitedTo(protoOutputStream);
                         protoOutputStream.flush();
@@ -341,6 +356,7 @@ public class Connection implements MessageListener {
         messageTimeStamps.add(new Tuple2<>(now, networkEnvelop));
         return violated;
     }
+
 
     ///////////////////////////////////////////////////////////////////////////////////////////
     // MessageListener implementation
@@ -758,10 +774,10 @@ public class Connection implements MessageListener {
                         long now = System.currentTimeMillis();
                         long elapsed = now - lastReadTimeStamp;
                         if (elapsed < 10) {
-                            log.debug("We got 2 network_messages received in less than 10 ms. We set the thread to sleep " +
+                            log.warn("We got 2 network_messages received in less than 10 ms. We set the thread to sleep " +
                                             "for 20 ms to avoid getting flooded by our peer. lastReadTimeStamp={}, now={}, elapsed={}",
                                     lastReadTimeStamp, now, elapsed);
-                            Thread.sleep(20);
+                            // Thread.sleep(20);
                         }
 
                         // Reading the protobuffer message from the inputstream
@@ -779,6 +795,21 @@ public class Connection implements MessageListener {
                         NetworkEnvelope networkEnvelope = networkProtoResolver.fromProto(proto);
                         lastReadTimeStamp = now;
                         log.debug("<< Received networkEnvelope of type: " + networkEnvelope.getClass().getSimpleName());
+
+                        int msgCount = 0;
+                        String key = networkEnvelope.getClass().getSimpleName();
+                        if (networkEnvelope instanceof AddPersistableNetworkPayloadMessage)
+                            key = ((AddPersistableNetworkPayloadMessage) networkEnvelope).getPersistableNetworkPayload().getClass().getSimpleName();
+                        else if (networkEnvelope instanceof AddDataMessage)
+                            key = ((AddDataMessage) networkEnvelope).getProtectedStorageEntry().getProtectedStoragePayload().getClass().getSimpleName();
+                        else if (networkEnvelope instanceof RemoveDataMessage)
+                            key = ((RemoveDataMessage) networkEnvelope).getProtectedStorageEntry().getProtectedStoragePayload().getClass().getSimpleName();
+
+                        if (messagesReceived.containsKey(key))
+                            msgCount = messagesReceived.get(key);
+
+                        messagesReceived.put(key, ++msgCount);
+                        log.warn("messagesReceived={}", messagesReceived);
 
                         int size = proto.getSerializedSize();
                         if (networkEnvelope instanceof Pong || networkEnvelope instanceof RefreshOfferMessage) {
@@ -835,8 +866,10 @@ public class Connection implements MessageListener {
                         }
 
                         if (connection.violatesThrottleLimit(networkEnvelope)
-                                && reportInvalidRequest(RuleViolation.THROTTLE_LIMIT_EXCEEDED))
-                            return;
+                                && reportInvalidRequest(RuleViolation.THROTTLE_LIMIT_EXCEEDED)) {
+                            //return;
+                            log.warn("THROTTLE_LIMIT_EXCEEDED");
+                        }
 
                         // Check P2P network ID
                         if (proto.getMessageVersion() != Version.getP2PMessageVersion()
